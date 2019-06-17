@@ -1,117 +1,73 @@
 class Vim < Formula
-  desc "Vi \"workalike\" with many additional features"
-  homepage "http://www.vim.org/"
-  url "https://github.com/vim/vim/archive/v7.4.865.tar.gz"
-  sha256 "b3c92b2bc6ba7933b38fdf1879f8d7014efeb7b94aead6ef82f7c4a954fb75cf"
+  desc "Vi 'workalike' with many additional features"
+  homepage "https://www.vim.org/"
+  # vim should only be updated every 50 releases on multiples of 50
+  url "https://github.com/vim/vim/archive/v8.1.1500.tar.gz"
+  sha256 "4bdadee10b8060f3bfc90af3a97c7b4b5964e60182033f8cf3f51e5b6d635134"
   head "https://github.com/vim/vim.git"
 
-  # We only have special support for finding depends_on :python, but not yet for
-  # :ruby, :perl etc., so we use the standard environment that leaves the
-  # PATH as the user has set it right now.
-  env :std
-
-  option "override-system-vi", "Override system vi"
-  option "disable-nls", "Build vim without National Language Support (translated messages, keymaps)"
-  option "with-client-server", "Enable client/server mode"
-  option "with-cdo", "Include :cdo, :cfdo, :ldo, and :lfdo commands"
-
-  LANGUAGES_OPTIONAL = %w[lua mzscheme python3 tcl]
-  LANGUAGES_DEFAULT  = %w[perl python ruby]
-
-  option "with-python3", "Build vim with python3 instead of python[2] support"
-  LANGUAGES_OPTIONAL.each do |language|
-    option "with-#{language}", "Build vim with #{language} support"
-  end
-  LANGUAGES_DEFAULT.each do |language|
-    option "without-#{language}", "Build vim without #{language} support"
-  end
-
-  depends_on :python => :recommended
-  depends_on :python3 => :optional
-  depends_on "lua" => :optional
-  depends_on "luajit" => :optional
-  depends_on :x11 if build.with? "client-server"
+  depends_on "gettext"
+  depends_on "lua"
+  depends_on "perl"
+  depends_on "python3"
+  depends_on "ruby"
 
   conflicts_with "ex-vi",
     :because => "vim and ex-vi both install bin/ex and bin/view"
 
+  conflicts_with "macvim",
+    :because => "vim and macvim both install vi* binaries"
+
   def install
-    ENV["LUA_PREFIX"] = HOMEBREW_PREFIX if build.with?("lua") || build.with?("luajit")
+    ENV.prepend_path "PATH", Formula["python"].opt_libexec/"bin"
+
+    # https://github.com/Homebrew/homebrew-core/pull/1046
+    ENV.delete("SDKROOT")
 
     # vim doesn't require any Python package, unset PYTHONPATH.
     ENV.delete("PYTHONPATH")
-
-    if build.with?("python") && which("python").to_s == "/usr/bin/python" && !MacOS.clt_installed?
-      # break -syslibpath jail
-      ln_s "/System/Library/Frameworks", buildpath
-      ENV.append "LDFLAGS", "-F#{buildpath}/Frameworks"
-    end
-
-    opts = []
-
-    (LANGUAGES_OPTIONAL + LANGUAGES_DEFAULT).each do |language|
-      opts << "--enable-#{language}interp" if build.with? language
-    end
-
-    if opts.include?("--enable-pythoninterp") && opts.include?("--enable-python3interp")
-      # only compile with either python or python3 support, but not both
-      # (if vim74 is compiled with +python3/dyn, the Python[3] library lookup segfaults
-      # in other words, a command like ":py3 import sys" leads to a SEGV)
-      opts -= %W[--enable-pythoninterp]
-    end
-
-    opts << "--disable-nls" if build.include? "disable-nls"
-    opts << "--enable-gui=no"
-
-    if build.with? "client-server"
-      opts << "--with-x"
-    else
-      opts << "--without-x"
-    end
-
-    if build.with? "luajit"
-      opts << "--with-luajit"
-      opts << "--enable-luainterp"
-    end
-
-    # XXX: Please do not submit a pull request that hardcodes the path
-    # to ruby: vim can be compiled against 1.8.x or 1.9.3-p385 and up.
-    # If you have problems with vim because of ruby, ensure a compatible
-    # version is first in your PATH when building vim.
 
     # We specify HOMEBREW_PREFIX as the prefix to make vim look in the
     # the right place (HOMEBREW_PREFIX/share/vim/{vimrc,vimfiles}) for
     # system vimscript files. We specify the normal installation prefix
     # when calling "make install".
+    # Homebrew will use the first suitable Perl & Ruby in your PATH if you
+    # build from source. Please don't attempt to hardcode either.
     system "./configure", "--prefix=#{HOMEBREW_PREFIX}",
                           "--mandir=#{man}",
                           "--enable-multibyte",
                           "--with-tlib=ncurses",
                           "--enable-cscope",
-                          "--with-features=huge",
+                          "--enable-terminal",
+			  "--with-python3",
                           "--with-compiledby=Homebrew",
-                          *opts
+                          "--enable-perlinterp",
+                          "--enable-rubyinterp",
+                          "--enable-python3interp",
+                          "--enable-gui=no",
+                          "--without-x",
+			  "--with-features=huge",
+			  "--with-features=python3",
+                          "--enable-luainterp",
+                          "--with-lua-prefix=#{Formula["lua"].opt_prefix}"
     system "make"
+    # Parallel install could miss some symlinks
+    # https://github.com/vim/vim/issues/1031
+    ENV.deparallelize
     # If stripping the binaries is enabled, vim will segfault with
     # statically-linked interpreters like ruby
-    # http://code.google.com/p/vim/issues/detail?id=114&thanks=114&ts=1361483471
-    system "make", "install", "prefix=#{prefix}", "STRIP=true"
-    bin.install_symlink "vim" => "vi" if build.include? "override-system-vi"
+    # https://github.com/vim/vim/issues/114
+    system "make", "install", "prefix=#{prefix}", "STRIP=#{which "true"}"
+    bin.install_symlink "vim" => "vi"
   end
 
   test do
-    # Simple test to check if Vim was linked to Python version in $PATH
-    if build.with? "python"
-      vim_path = bin/"vim"
-
-      # Get linked framework using otool
-      otool_output = `otool -L #{vim_path} | grep -m 1 Python`.gsub(/\(.*\)/, "").strip.chomp
-
-      # Expand the link and get the python exec path
-      vim_framework_path = Pathname.new(otool_output).realpath.dirname.to_s.chomp
-      system_framework_path = `python-config --exec-prefix`.chomp
-
-      assert_equal system_framework_path, vim_framework_path
-    end
+    (testpath/"commands.vim").write <<~EOS
+      :python3 import vim; vim.current.buffer[0] = 'hello python3'
+      :wq
+    EOS
+    system bin/"vim", "-T", "dumb", "-s", "commands.vim", "test.txt"
+    assert_equal "hello python3", File.read("test.txt").chomp
+    assert_match "+gettext", shell_output("#{bin}/vim --version")
   end
 end
